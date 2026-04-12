@@ -213,6 +213,10 @@ impl<D, E: Ext> EtherIface<D, E> {
         // Resolve the next-hop IP address.
         let next_hop_ip = match iface_cx.route(&pkt.ip_repr().dst_addr(), iface_cx.now()) {
             Some(IpAddress::Ipv4(next_hop_ip)) => next_hop_ip,
+            Some(IpAddress::Ipv6(_)) => {
+                // For IPv6, we don't have neighbor discovery yet
+                return Err(None);
+            }
             None => return Err(None),
         };
 

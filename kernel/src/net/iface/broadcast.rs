@@ -32,6 +32,8 @@ pub(super) fn init() {
 
 /// Determines if a given IP endpoint's address is a known broadcast address.
 pub fn is_broadcast_endpoint(endpoint: &IpEndpoint) -> bool {
-    let IpAddress::Ipv4(ipv4_addr) = &endpoint.addr;
-    BROADCAST_ADDRS.get().unwrap().contains(ipv4_addr)
+    let IpAddress::Ipv4(ipv4_addr) = endpoint.addr else {
+        return false;
+    };
+    BROADCAST_ADDRS.get().unwrap().contains(&ipv4_addr)
 }

@@ -303,16 +303,12 @@ impl<E: Ext> PollContext<'_, E> {
         }
 
         if self.is_unicast_local(ip_repr.src_addr()) {
-            // In this case, the generating ICMP message will have a local IP address as the
-            // destination. However, since we don't have the ability to handle ICMP messages, we'll
-            // just skip the generation.
-            //
-            // TODO: Generate the ICMP message here once we're able to handle incoming ICMP
-            // messages.
             return None;
         }
 
-        let IpRepr::Ipv4(ipv4_repr) = ip_repr;
+        let IpRepr::Ipv4(ipv4_repr) = ip_repr else {
+            return None;
+        };
 
         let reply_len = icmp_reply_payload_len(ip_payload.len(), IPV4_MIN_MTU, IPV4_HEADER_LEN);
         let icmp_repr = Icmpv4Repr::DstUnreachable {
@@ -348,6 +344,7 @@ impl<E: Ext> PollContext<'_, E> {
                 .context()
                 .ipv4_addr()
                 .is_some_and(|addr| addr == dst_addr),
+            IpAddress::Ipv6(_) => false,
         }
     }
 }

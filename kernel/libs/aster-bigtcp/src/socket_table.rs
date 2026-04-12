@@ -31,14 +31,12 @@ pub(crate) struct ListenerKey {
 }
 
 impl ListenerKey {
-    pub(crate) const fn new(addr: IpAddress, port: PortNum) -> Self {
-        // FIXME: If the socket is listening on an unspecified address (0.0.0.0),
-        // Linux will get the hash value by port only.
+    pub(crate) fn new(addr: IpAddress, port: PortNum) -> Self {
         let hash = hash_addr_port(addr, port);
         Self { addr, port, hash }
     }
 
-    pub(crate) const fn hash(&self) -> SocketHash {
+    pub(crate) fn hash(&self) -> SocketHash {
         self.hash
     }
 }
@@ -64,7 +62,7 @@ pub(crate) struct ConnectionKey {
 }
 
 impl ConnectionKey {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         local_addr: IpAddress,
         local_port: PortNum,
         remote_addr: IpAddress,
@@ -80,7 +78,7 @@ impl ConnectionKey {
         }
     }
 
-    pub(crate) const fn hash(&self) -> SocketHash {
+    pub(crate) fn hash(&self) -> SocketHash {
         self.hash
     }
 }
@@ -97,29 +95,45 @@ const HASH_SECRET: u32 = 0xdeadbeef;
 // FIXME: This constant should be a per-net-namespace value
 const NET_HASHMIX: u32 = 0xbeefdead;
 
-const fn hash_local_remote(
+fn hash_local_remote(
     local_addr: IpAddress,
     local_port: PortNum,
     remote_addr: IpAddress,
     remote_port: PortNum,
 ) -> SocketHash {
-    // FIXME: Deal with IPv6 addresses once IPv6 is supported.
-    let IpAddress::Ipv4(local_ipv4) = local_addr;
-    let IpAddress::Ipv4(remote_ipv4) = remote_addr;
-
-    jhash_3vals(
-        local_ipv4.to_bits(),
-        remote_ipv4.to_bits(),
-        (local_port as u32).wrapping_shl(16) | remote_port as u32,
-        HASH_SECRET.wrapping_add(NET_HASHMIX),
-    )
+    match (local_addr, remote_addr) {
+        (IpAddress::Ipv4(local_ipv4), IpAddress::Ipv4(remote_ipv4)) => {
+            jhash_3vals(
+                local_ipv4.to_bits(),
+                remote_ipv4.to_bits(),
+                (local_port as u32).wrapping_shl(16) | remote_port as u32,
+                HASH_SECRET.wrapping_add(NET_HASHMIX),
+            )
+        }
+        (IpAddress::Ipv6(local_ipv6), IpAddress::Ipv6(remote_ipv6)) => {
+            let a = local_ipv6.to_bits() as u32;
+            let b = remote_ipv6.to_bits() as u32;
+            jhash_3vals(
+                a,
+                b,
+                (local_port as u32).wrapping_shl(16) | remote_port as u32,
+                HASH_SECRET.wrapping_add(NET_HASHMIX),
+            )
+        }
+        _ => panic!("Cannot mix IPv4 and IPv6 addresses"),
+    }
 }
 
-const fn hash_addr_port(addr: IpAddress, port: PortNum) -> SocketHash {
-    // FIXME: Deal with IPv6 addresses once IPv6 is supported.
-    let IpAddress::Ipv4(ipv4_addr) = addr;
-
-    jhash_1vals(ipv4_addr.to_bits(), NET_HASHMIX) ^ (port as u32)
+fn hash_addr_port(addr: IpAddress, port: PortNum) -> SocketHash {
+    match addr {
+        IpAddress::Ipv4(ipv4_addr) => {
+            jhash_1vals(ipv4_addr.to_bits(), NET_HASHMIX) ^ (port as u32)
+        }
+        IpAddress::Ipv6(ipv6_addr) => {
+            let a = ipv6_addr.to_bits() as u32;
+            jhash_1vals(a, NET_HASHMIX) ^ (port as u32)
+        }
+    }
 }
 
 /// The socket table manages TCP and UDP sockets.

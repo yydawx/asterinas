@@ -8,9 +8,17 @@ set -e
 sleep 0.2
 ./tcp_client
 
+./tcp6_server &
+sleep 0.2
+./tcp6_client
+
 ./udp_server &
 sleep 0.2
 ./udp_client
+
+./udp6_server &
+sleep 0.2
+./udp6_client
 
 ./unix_server &
 sleep 0.2

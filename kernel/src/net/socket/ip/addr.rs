@@ -10,6 +10,7 @@ impl TryFrom<SocketAddr> for IpEndpoint {
     fn try_from(value: SocketAddr) -> Result<Self> {
         match value {
             SocketAddr::IPv4(addr, port) => Ok(IpEndpoint::new(addr.into(), port)),
+            SocketAddr::IPv6(addr, port) => Ok(IpEndpoint::new(addr.into(), port)),
             _ => return_errno_with_message!(
                 Errno::EAFNOSUPPORT,
                 "the address is in an unsupported address family"
@@ -23,7 +24,7 @@ impl From<IpEndpoint> for SocketAddr {
         let port = endpoint.port;
         match endpoint.addr {
             IpAddress::Ipv4(addr) => SocketAddr::IPv4(addr, port),
-            // TODO: support IPv6
+            IpAddress::Ipv6(addr) => SocketAddr::IPv6(addr, port),
         }
     }
 }

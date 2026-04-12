@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::net::Ipv4Addr;
+
 use aster_bigtcp::{
     errors::BindError,
     iface::BindPortConfig,
@@ -12,11 +14,13 @@ use crate::{
 };
 
 pub(super) fn get_iface_to_bind(ip_addr: &IpAddress) -> Option<Arc<Iface>> {
-    let IpAddress::Ipv4(ipv4_addr) = ip_addr;
+    let IpAddress::Ipv4(ipv4_addr) = *ip_addr else {
+        return None;
+    };
     iter_all_ifaces()
         .find(|iface| {
             if let Some(iface_ipv4_addr) = iface.ipv4_addr() {
-                iface_ipv4_addr == *ipv4_addr
+                iface_ipv4_addr == ipv4_addr
             } else {
                 false
             }
@@ -28,10 +32,12 @@ pub(super) fn get_iface_to_bind(ip_addr: &IpAddress) -> Option<Arc<Iface>> {
 /// If the remote address is the same as that of some iface, we will use the iface.
 /// Otherwise, we will use a default interface.
 fn get_ephemeral_iface(remote_ip_addr: &IpAddress) -> Arc<Iface> {
-    let IpAddress::Ipv4(remote_ipv4_addr) = remote_ip_addr;
+    let IpAddress::Ipv4(remote_ipv4_addr) = *remote_ip_addr else {
+        return loopback_iface().clone();
+    };
     if let Some(iface) = iter_all_ifaces().find(|iface| {
         if let Some(iface_ipv4_addr) = iface.ipv4_addr() {
-            iface_ipv4_addr == *remote_ipv4_addr
+            iface_ipv4_addr == remote_ipv4_addr
         } else {
             false
         }
@@ -78,6 +84,9 @@ impl From<BindError> for Error {
 }
 
 pub(super) fn get_ephemeral_endpoint(remote_endpoint: &IpEndpoint) -> IpEndpoint {
+    let IpAddress::Ipv4(_) = remote_endpoint.addr else {
+        return IpEndpoint::new(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), 0);
+    };
     let iface = get_ephemeral_iface(&remote_endpoint.addr);
     let ip_addr = iface.ipv4_addr().unwrap();
     IpEndpoint::new(IpAddress::Ipv4(ip_addr), 0)
