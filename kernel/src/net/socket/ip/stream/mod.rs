@@ -192,6 +192,7 @@ impl StreamSocket {
     // Returns `None` to block the task and wait for the connection to be established, and returns
     // `Some(_)` if blocking is not necessary or not allowed.
     fn start_connect(&self, remote_endpoint: &IpEndpoint) -> Option<Result<()>> {
+        emerg!("[IPv6 DEBUG] start_connect: remote={}", remote_endpoint);
         let is_nonblocking = self.is_nonblocking();
 
         let mut state = self.write_updated_state();
@@ -244,15 +245,18 @@ impl StreamSocket {
                 StreamObserver::new(self.pollee.clone()),
             ) {
                 Ok(connecting_stream) => {
+                    emerg!("start_connect: created ConnectingStream successfully");
                     let iface_to_poll = connecting_stream.iface().clone();
                     (State::Connecting(connecting_stream), Some(iface_to_poll))
                 }
                 Err((err, init_stream)) if err.error() == Errno::ECONNREFUSED => {
+                    emerg!("start_connect: connection refused (async)");
                     // `ECONNREFUSED` should be reported asynchronously, i.e., we need to return
                     // `EINPROGRESS` first for non-blocking sockets.
                     (State::Init(init_stream), None)
                 }
                 Err((err, init_stream)) => {
+                    emerg!("start_connect: error: {:?}", err);
                     return (State::Init(init_stream), (Some(Err(err)), None));
                 }
             };
@@ -282,12 +286,20 @@ impl StreamSocket {
     fn check_connect(&self) -> Result<()> {
         let mut state = self.write_updated_state();
 
+        emerg!("check_connect: checking connection state");
         match state.as_mut() {
-            State::Init(init_stream) => init_stream.finish_last_connect(),
+            State::Init(init_stream) => {
+                emerg!("check_connect: state is Init");
+                init_stream.finish_last_connect()
+            }
             State::Connecting(_) => {
+                emerg!("check_connect: state is Connecting, returning EAGAIN");
                 return_errno_with_message!(Errno::EAGAIN, "the connection is pending")
             }
-            State::Connected(connected_stream) => connected_stream.finish_last_connect(),
+            State::Connected(connected_stream) => {
+                emerg!("check_connect: state is Connected");
+                connected_stream.finish_last_connect()
+            }
             State::Listen(_) => {
                 return_errno_with_message!(Errno::EISCONN, "the socket is listening")
             }
@@ -447,7 +459,32 @@ impl Socket for StreamSocket {
             return result;
         }
 
-        self.wait_events(IoEvents::OUT, None, || self.check_connect())
+        // Wait for connection with periodic iface polling
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            
+            // Check if connection is done
+            let result = self.check_connect();
+            if result.is_ok() || result.unwrap_err().error() != Errno::EAGAIN {
+                emerg!("connect: attempt {} - connected!", attempts);
+                return result;
+            }
+            
+            emerg!("connect: attempt {} - still waiting, polling iface...", attempts);
+            
+            // Poll the interface
+            self.pollee.invalidate();
+            let state = self.read_updated_state();
+            if let Some(iface) = state.as_ref().iface() {
+                iface.poll();
+            }
+            
+            // Short sleep to avoid CPU spin
+            if attempts % 100 == 0 {
+                emerg!("connect: waited {} attempts", attempts);
+            }
+        }
     }
 
     fn listen(&self, backlog: usize) -> Result<()> {

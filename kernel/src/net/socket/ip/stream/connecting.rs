@@ -31,16 +31,22 @@ impl ConnectingStream {
         option: &RawTcpOption,
         observer: StreamObserver,
     ) -> core::result::Result<Self, (Error, BoundPort)> {
+        emerg!("ConnectingStream::new: bound_port addr={}, remote={}", bound_port.addr(), remote_endpoint);
         let tcp_conn =
             match TcpConnection::new_connect(bound_port, remote_endpoint, option, observer) {
-                Ok(tcp_conn) => tcp_conn,
-                Err((bound_port, ConnectError::AddressInUse)) => {
+                Ok(tcp_conn) => {
+                    emerg!("ConnectingStream::new: TcpConnection created successfully");
+                    tcp_conn
+                }
+                Err((bp, ConnectError::AddressInUse)) => {
+                    emerg!("ConnectingStream::new: AddressInUse error");
                     return Err((
                         Error::with_message(Errno::EADDRNOTAVAIL, "connection key conflicts"),
-                        bound_port,
+                        bp,
                     ));
                 }
-                Err((bound_port, _)) => {
+                Err((bp, err)) => {
+                    emerg!("ConnectingStream::new: connection error {:?}", err);
                     // The only reason this method might go to this branch is because
                     // we're trying to connect to an unspecified address (i.e. 0.0.0.0).
                     // We currently have no support for binding to,
@@ -53,7 +59,7 @@ impl ConnectingStream {
                             Errno::ECONNREFUSED,
                             "connecting to an unspecified address is not supported",
                         ),
-                        bound_port,
+                        bp,
                     ));
                 }
             };
@@ -105,7 +111,22 @@ impl ConnectingStream {
     }
 
     pub(super) fn check_io_events(&self) -> IoEvents {
-        IoEvents::empty()
+        use aster_bigtcp::socket::ConnectState;
+        
+        match self.tcp_conn.connect_state() {
+            ConnectState::Connected => {
+                emerg!("check_io_events: connection established, returning OUT");
+                IoEvents::OUT
+            }
+            ConnectState::Connecting => {
+                emerg!("check_io_events: still connecting");
+                IoEvents::empty()
+            }
+            ConnectState::Refused => {
+                emerg!("check_io_events: connection refused");
+                IoEvents::empty()
+            }
+        }
     }
 
     pub(super) fn set_raw_option<R>(

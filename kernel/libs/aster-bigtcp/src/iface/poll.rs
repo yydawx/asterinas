@@ -60,7 +60,7 @@ impl<E: Ext> PollContext<'_, E> {
     pub(super) fn poll_ingress<D, P, Q>(
         &mut self,
         device: &mut D,
-        process_phy: &mut P,
+        _process_phy: &mut P,
         dispatch_phy: &mut Q,
     ) where
         D: Device + ?Sized,
@@ -74,16 +74,20 @@ impl<E: Ext> PollContext<'_, E> {
     {
         while let Some((rx_token, tx_token)) = device.receive(self.iface.context().now()) {
             rx_token.consume(|data| {
-                let Some((pkt, tx_token)) = process_phy(data, self.iface.context_mut(), tx_token)
-                else {
-                    return;
-                };
-
-                let Some(reply) = self.parse_and_process_ipv4(pkt) else {
-                    return;
-                };
-
-                dispatch_phy(&reply, self.iface.context_mut(), tx_token);
+                // 尝试解析为IPv4数据包
+                if let Ok(ipv4_pkt) = Ipv4Packet::new_checked(data) {
+                    let Some(reply) = self.parse_and_process_ipv4(ipv4_pkt) else {
+                        return;
+                    };
+                    dispatch_phy(&reply, self.iface.context_mut(), tx_token);
+                }
+                // 尝试解析为IPv6数据包
+                else if let Ok(ipv6_pkt) = smoltcp::wire::Ipv6Packet::new_checked(data) {
+                    let Some(reply) = self.parse_and_process_ipv6(ipv6_pkt) else {
+                        return;
+                    };
+                    dispatch_phy(&reply, self.iface.context_mut(), tx_token);
+                }
             });
         }
     }
@@ -110,6 +114,30 @@ impl<E: Ext> PollContext<'_, E> {
             }
             IpProtocol::Udp => {
                 self.parse_and_process_udp(&IpRepr::Ipv4(repr), pkt.payload(), &checksum_caps)
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_and_process_ipv6<'pkt>(
+        &mut self,
+        pkt: smoltcp::wire::Ipv6Packet<&'pkt [u8]>,
+    ) -> Option<Packet<'pkt>> {
+        // Parse the IPv6 header. Ignore the packet if the header is ill-formed.
+        let repr = smoltcp::wire::Ipv6Repr::parse(&pkt).ok()?;
+
+        if !self.is_unicast_local(IpAddress::Ipv6(repr.dst_addr)) {
+            // 暂时不处理IPv6的ICMP不可达消息
+            return None;
+        }
+
+        let checksum_caps = self.iface.context().checksum_caps();
+        match repr.next_header {
+            IpProtocol::Tcp => {
+                self.parse_and_process_tcp(&IpRepr::Ipv6(repr), pkt.payload(), &checksum_caps)
+            }
+            IpProtocol::Udp => {
+                self.parse_and_process_udp(&IpRepr::Ipv6(repr), pkt.payload(), &checksum_caps)
             }
             _ => None,
         }
@@ -344,7 +372,11 @@ impl<E: Ext> PollContext<'_, E> {
                 .context()
                 .ipv4_addr()
                 .is_some_and(|addr| addr == dst_addr),
-            IpAddress::Ipv6(_) => false,
+            IpAddress::Ipv6(dst_addr) => self
+                .iface
+                .context()
+                .ipv6_addr()
+                .is_some_and(|addr| addr == dst_addr),
         }
     }
 }
