@@ -82,14 +82,16 @@ impl<E: Ext> PollContext<'_, E> {
 
                 match ip_packet {
                     IpPacket::Ipv4(ipv4_pkt) => {
-                        if let Some(reply) = self.parse_and_process_ipv4(ipv4_pkt) {
-                            dispatch_phy(&reply, self.iface.context_mut(), tx_token);
-                        }
+                        let Some(reply) = self.parse_and_process_ipv4(ipv4_pkt) else {
+                            return;
+                        };
+                        dispatch_phy(&reply, self.iface.context_mut(), tx_token);
                     }
                     IpPacket::Ipv6(ipv6_pkt) => {
-                        if let Some(reply) = self.parse_and_process_ipv6(ipv6_pkt) {
-                            dispatch_phy(&reply, self.iface.context_mut(), tx_token);
-                        }
+                        let Some(reply) = self.parse_and_process_ipv6(ipv6_pkt) else {
+                            return;
+                        };
+                        dispatch_phy(&reply, self.iface.context_mut(), tx_token);
                     }
                 }
             });

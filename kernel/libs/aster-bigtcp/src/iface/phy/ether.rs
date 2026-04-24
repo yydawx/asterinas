@@ -97,12 +97,12 @@ where
 }
 
 impl<D, E: Ext> EtherIface<D, E> {
-    fn process<'a, T: TxToken>(
+    fn process<'pkt, T: TxToken>(
         &self,
-        data: &'a [u8],
+        data: &'pkt [u8],
         iface_cx: &mut Context,
         tx_token: T,
-    ) -> Option<(IpPacket<'a>, T)> {
+    ) -> Option<(IpPacket<'pkt>, T)> {
         match self.parse_ip_or_process_arp(data, iface_cx) {
             Ok(pkt) => Some((IpPacket::Ipv4(pkt), tx_token)),
             Err(Some(arp)) => {
