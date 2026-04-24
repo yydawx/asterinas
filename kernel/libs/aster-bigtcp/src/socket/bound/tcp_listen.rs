@@ -236,7 +236,10 @@ impl<E: Ext> TcpListenerBg<E> {
         let conn = TcpConnection::new_cyclic(
             self.bound
                 .iface()
-                .bind(BindPortConfig::Backlog(self.bound.port()))
+                .bind(BindPortConfig::Backlog(
+                    self.bound.addr(),
+                    self.bound.port(),
+                ))
                 .unwrap(),
             |weak| {
                 TcpConnectionInner::new(

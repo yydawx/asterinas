@@ -18,7 +18,7 @@ use crate::{
     ext::Ext,
     iface::{
         Iface, InterfaceFlags, ScheduleNextPoll,
-        common::{IfaceCommon, InterfaceType},
+        common::{IfaceCommon, InterfaceType, IpPacket},
         iface::internal::IfaceInternal,
         time::get_network_timestamp,
     },
@@ -97,14 +97,14 @@ where
 }
 
 impl<D, E: Ext> EtherIface<D, E> {
-    fn process<'pkt, T: TxToken>(
+    fn process<'a, T: TxToken>(
         &self,
-        data: &'pkt [u8],
+        data: &'a [u8],
         iface_cx: &mut Context,
         tx_token: T,
-    ) -> Option<(Ipv4Packet<&'pkt [u8]>, T)> {
+    ) -> Option<(IpPacket<'a>, T)> {
         match self.parse_ip_or_process_arp(data, iface_cx) {
-            Ok(pkt) => Some((pkt, tx_token)),
+            Ok(pkt) => Some((IpPacket::Ipv4(pkt), tx_token)),
             Err(Some(arp)) => {
                 Self::emit_arp(&arp, tx_token);
                 None
@@ -213,6 +213,10 @@ impl<D, E: Ext> EtherIface<D, E> {
         // Resolve the next-hop IP address.
         let next_hop_ip = match iface_cx.route(&pkt.ip_repr().dst_addr(), iface_cx.now()) {
             Some(IpAddress::Ipv4(next_hop_ip)) => next_hop_ip,
+            Some(IpAddress::Ipv6(_)) => {
+                // For IPv6, we don't have neighbor discovery yet
+                return Err(None);
+            }
             None => return Err(None),
         };
 

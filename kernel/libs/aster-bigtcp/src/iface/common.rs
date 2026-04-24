@@ -15,8 +15,39 @@ use ostd::sync::{SpinLock, SpinLockGuard};
 use smoltcp::{
     iface::{Context, packet::Packet},
     phy::Device,
-    wire::{IpAddress, IpEndpoint, Ipv4Address, Ipv4Packet},
+    wire::{IpAddress, IpEndpoint, Ipv4Address, Ipv4Packet, Ipv6Address, Ipv6Packet},
 };
+
+/// An enum representing either an IPv4 or IPv6 packet.
+pub(super) enum IpPacket<'a> {
+    Ipv4(Ipv4Packet<&'a [u8]>),
+    Ipv6(Ipv6Packet<&'a [u8]>),
+}
+
+/// Normalizes IPv4-mapped IPv6 addresses to IPv4 addresses.
+///
+/// IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) should be treated as equivalent
+/// to their IPv4 counterparts for binding purposes. This ensures that binding
+/// to 192.0.2.1:80 and ::ffff:192.0.2.1:80 are treated as the same.
+///
+/// TODO: This function currently only handles port binding conflict detection.
+/// Full dual-stack support is not yet implemented, including:
+/// - Accepting IPv4 connections on IPv6 wildcard socket (binding to `::`)
+/// - Returning IPv4-mapped addresses in accept() for IPv4 clients
+/// - Proper handling of `IPV6_V6ONLY` socket option
+fn normalize_ip_address(addr: IpAddress) -> IpAddress {
+    match addr {
+        IpAddress::Ipv6(ipv6) => {
+            // Check if this is an IPv4-mapped IPv6 address
+            if let Some(ipv4) = ipv6.to_ipv4_mapped() {
+                IpAddress::Ipv4(ipv4)
+            } else {
+                IpAddress::Ipv6(ipv6)
+            }
+        }
+        other => other,
+    }
+}
 
 use super::{
     Iface,
@@ -39,7 +70,7 @@ pub struct IfaceCommon<E: Ext> {
     flags: InterfaceFlags,
 
     interface: SpinLock<PollableIface<E>, BottomHalfDisabled>,
-    used_ports: SpinLock<BTreeMap<u16, PortState>, BottomHalfDisabled>,
+    used_ports: SpinLock<BTreeMap<IpAddress, BTreeMap<u16, PortState>>, BottomHalfDisabled>,
     sockets: SpinLock<SocketTable<E>, BottomHalfDisabled>,
     sched_poll: E::ScheduleNextPoll,
 }
@@ -86,6 +117,10 @@ impl<E: Ext> IfaceCommon<E> {
         self.interface.lock().ipv4_addr()
     }
 
+    pub(super) fn ipv6_addr(&self) -> Option<Ipv6Address> {
+        self.interface.lock().ipv6_addr()
+    }
+
     pub(super) fn prefix_len(&self) -> Option<u8> {
         self.interface.lock().prefix_len()
     }
@@ -122,9 +157,11 @@ impl<E: Ext> IfaceCommon<E> {
         iface: Arc<dyn Iface<E>>,
         config: BindPortConfig,
     ) -> core::result::Result<BoundPort<E>, BindError> {
+        let addr = config.addr();
         let (port, can_reuse) = self.bind_port(config)?;
         Ok(BoundPort {
             iface,
+            addr,
             port,
             can_reuse: AtomicBool::new(can_reuse),
         })
@@ -136,11 +173,13 @@ impl<E: Ext> IfaceCommon<E> {
     ///
     /// See <https://en.wikipedia.org/wiki/Ephemeral_port>.
     fn alloc_ephemeral_port(
-        used_ports: &mut BTreeMap<u16, PortState>,
+        used_ports: &mut BTreeMap<IpAddress, BTreeMap<u16, PortState>>,
+        addr: IpAddress,
         _can_reuse: bool,
     ) -> Option<u16> {
+        let family_ports = used_ports.entry(addr).or_default();
         for port in IP_LOCAL_PORT_START..=IP_LOCAL_PORT_END {
-            if let Entry::Vacant(..) = used_ports.entry(port) {
+            if let Entry::Vacant(..) = family_ports.entry(port) {
                 return Some(port);
             }
         }
@@ -154,21 +193,24 @@ impl<E: Ext> IfaceCommon<E> {
     fn bind_port(&self, config: BindPortConfig) -> Result<(u16, bool), BindError> {
         let mut used_ports = self.used_ports.lock();
         let config_can_reuse = config.can_reuse();
+        // Normalize IPv4-mapped IPv6 addresses to IPv4 for consistent key lookup
+        let addr = normalize_ip_address(config.addr());
 
         let port = if let Some(port) = config.port() {
             port
         } else {
-            match Self::alloc_ephemeral_port(&mut used_ports, config_can_reuse) {
+            match Self::alloc_ephemeral_port(&mut used_ports, addr, config_can_reuse) {
                 Some(port) => port,
                 None => return Err(BindError::Exhausted),
             }
         };
 
-        if let Some(port_state) = used_ports.get_mut(&port) {
+        let family_ports = used_ports.entry(addr).or_default();
+        if let Some(port_state) = family_ports.get_mut(&port) {
             // FIXME: If the socket is not a backlog socket,
             // we should check whether there is a listening socket on the port.
             // If there is, the socket cannot be bound to that port.
-            let can_reuse = matches!(config, BindPortConfig::Backlog(_))
+            let can_reuse = matches!(config, BindPortConfig::Backlog(..))
                 || (port_state.can_reuse() & config_can_reuse);
             if can_reuse {
                 port_state.nsocket += 1;
@@ -180,23 +222,29 @@ impl<E: Ext> IfaceCommon<E> {
             }
         } else {
             let port_state = PortState::new(config_can_reuse);
-            used_ports.insert(port, port_state);
+            family_ports.insert(port, port_state);
         };
 
         Ok((port, config_can_reuse))
     }
 
     /// Releases the port so that it can be used again.
-    fn release_port(&self, port: u16, can_reuse: bool) {
+    fn release_port(&self, addr: IpAddress, port: u16, can_reuse: bool) {
+        // Normalize IPv4-mapped IPv6 addresses to IPv4 for consistent key lookup
+        let addr = normalize_ip_address(addr);
         let mut used_ports = self.used_ports.lock();
-        if let Entry::Occupied(mut entry) = used_ports.entry(port) {
-            let port_state = entry.get_mut();
+        if let Some(port_state) = used_ports
+            .get_mut(&addr)
+            .and_then(|family_ports| family_ports.get_mut(&port))
+        {
             port_state.nsocket -= 1;
             if can_reuse {
                 port_state.nreuse -= 1;
             }
             if port_state.nsocket == 0 {
-                entry.remove_entry();
+                used_ports
+                    .get_mut(&addr)
+                    .and_then(|family_ports| family_ports.remove(&port));
             }
         }
     }
@@ -234,7 +282,7 @@ impl<E: Ext> IfaceCommon<E> {
                 &'pkt [u8],
                 &'cx mut Context,
                 D::TxToken<'tx>,
-                Option<(Ipv4Packet<&'pkt [u8]>, D::TxToken<'tx>)>,
+                Option<(IpPacket<'pkt>, D::TxToken<'tx>)>,
             >,
         Q: FnMut(&Packet, &mut Context, D::TxToken<'_>),
     {
@@ -274,6 +322,7 @@ impl<E: Ext> IfaceCommon<E> {
 // FIXME: TCP and UDP ports are independent. Find a way to track the protocol here.
 pub struct BoundPort<E: Ext> {
     iface: Arc<dyn Iface<E>>,
+    addr: IpAddress,
     port: u16,
     can_reuse: AtomicBool,
 }
@@ -289,13 +338,14 @@ impl<E: Ext> BoundPort<E> {
         self.port
     }
 
+    /// Returns the bound IP address.
+    pub fn addr(&self) -> IpAddress {
+        self.addr
+    }
+
     /// Returns the bound endpoint.
     pub fn endpoint(&self) -> Option<IpEndpoint> {
-        let ip_addr = {
-            let ipv4_addr = self.iface().ipv4_addr()?;
-            IpAddress::Ipv4(ipv4_addr)
-        };
-        Some(IpEndpoint::new(ip_addr, self.port))
+        Some(IpEndpoint::new(self.addr, self.port))
     }
 
     /// Sets whether the port can be reused.
@@ -307,7 +357,12 @@ impl<E: Ext> BoundPort<E> {
             return;
         }
 
-        if let Some(port_state) = used_ports.get_mut(&self.port) {
+        // Normalize IPv4-mapped IPv6 addresses for consistent key lookup
+        let normalized_addr = normalize_ip_address(self.addr);
+        if let Some(port_state) = used_ports
+            .get_mut(&normalized_addr)
+            .and_then(|family_ports| family_ports.get_mut(&self.port))
+        {
             if can_reuse {
                 port_state.nreuse += 1;
             } else {
@@ -323,7 +378,7 @@ impl<E: Ext> Drop for BoundPort<E> {
     fn drop(&mut self) {
         self.iface
             .common()
-            .release_port(self.port, *self.can_reuse.get_mut());
+            .release_port(self.addr, self.port, *self.can_reuse.get_mut());
     }
 }
 

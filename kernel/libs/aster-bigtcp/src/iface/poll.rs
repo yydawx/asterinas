@@ -15,7 +15,7 @@ use smoltcp::{
     },
 };
 
-use super::poll_iface::PollableIfaceMut;
+use super::{common::IpPacket, poll_iface::PollableIfaceMut};
 use crate::{
     ext::Ext,
     socket::{TcpConnectionBg, TcpProcessResult},
@@ -68,22 +68,30 @@ impl<E: Ext> PollContext<'_, E> {
                 &'pkt [u8],
                 &'cx mut Context,
                 D::TxToken<'tx>,
-                Option<(Ipv4Packet<&'pkt [u8]>, D::TxToken<'tx>)>,
+                Option<(IpPacket<'pkt>, D::TxToken<'tx>)>,
             >,
         Q: FnMut(&Packet, &mut Context, D::TxToken<'_>),
     {
         while let Some((rx_token, tx_token)) = device.receive(self.iface.context().now()) {
             rx_token.consume(|data| {
-                let Some((pkt, tx_token)) = process_phy(data, self.iface.context_mut(), tx_token)
+                let Some((ip_packet, tx_token)) =
+                    process_phy(data, self.iface.context_mut(), tx_token)
                 else {
                     return;
                 };
 
-                let Some(reply) = self.parse_and_process_ipv4(pkt) else {
-                    return;
-                };
-
-                dispatch_phy(&reply, self.iface.context_mut(), tx_token);
+                match ip_packet {
+                    IpPacket::Ipv4(ipv4_pkt) => {
+                        if let Some(reply) = self.parse_and_process_ipv4(ipv4_pkt) {
+                            dispatch_phy(&reply, self.iface.context_mut(), tx_token);
+                        }
+                    }
+                    IpPacket::Ipv6(ipv6_pkt) => {
+                        if let Some(reply) = self.parse_and_process_ipv6(ipv6_pkt) {
+                            dispatch_phy(&reply, self.iface.context_mut(), tx_token);
+                        }
+                    }
+                }
             });
         }
     }
@@ -110,6 +118,30 @@ impl<E: Ext> PollContext<'_, E> {
             }
             IpProtocol::Udp => {
                 self.parse_and_process_udp(&IpRepr::Ipv4(repr), pkt.payload(), &checksum_caps)
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_and_process_ipv6<'pkt>(
+        &mut self,
+        pkt: smoltcp::wire::Ipv6Packet<&'pkt [u8]>,
+    ) -> Option<Packet<'pkt>> {
+        // Parse the IPv6 header. Ignore the packet if the header is ill-formed.
+        let repr = smoltcp::wire::Ipv6Repr::parse(&pkt).ok()?;
+
+        if !self.is_unicast_local(IpAddress::Ipv6(repr.dst_addr)) {
+            // Temporarily not handling IPv6 ICMP unreachable messages
+            return None;
+        }
+
+        let checksum_caps = self.iface.context().checksum_caps();
+        match repr.next_header {
+            IpProtocol::Tcp => {
+                self.parse_and_process_tcp(&IpRepr::Ipv6(repr), pkt.payload(), &checksum_caps)
+            }
+            IpProtocol::Udp => {
+                self.parse_and_process_udp(&IpRepr::Ipv6(repr), pkt.payload(), &checksum_caps)
             }
             _ => None,
         }
@@ -312,7 +344,9 @@ impl<E: Ext> PollContext<'_, E> {
             return None;
         }
 
-        let IpRepr::Ipv4(ipv4_repr) = ip_repr;
+        let IpRepr::Ipv4(ipv4_repr) = ip_repr else {
+            return None;
+        };
 
         let reply_len = icmp_reply_payload_len(ip_payload.len(), IPV4_MIN_MTU, IPV4_HEADER_LEN);
         let icmp_repr = Icmpv4Repr::DstUnreachable {
@@ -348,6 +382,11 @@ impl<E: Ext> PollContext<'_, E> {
                 .context()
                 .ipv4_addr()
                 .is_some_and(|addr| addr == dst_addr),
+            IpAddress::Ipv6(dst_addr) => self
+                .iface
+                .context()
+                .ipv6_addr()
+                .is_some_and(|addr| addr == dst_addr),
         }
     }
 }
@@ -359,13 +398,13 @@ impl<E: Ext> PollContext<'_, E> {
         Q: FnMut(&Packet, &mut Context, D::TxToken<'_>),
     {
         while let Some(tx_token) = device.transmit(self.iface.context().now()) {
-            if !self.dispatch_ipv4(tx_token, dispatch_phy) {
+            if !self.dispatch_ip(tx_token, dispatch_phy) {
                 break;
             }
         }
     }
 
-    fn dispatch_ipv4<T, Q>(&mut self, tx_token: T, dispatch_phy: &mut Q) -> bool
+    fn dispatch_ip<T, Q>(&mut self, tx_token: T, dispatch_phy: &mut Q) -> bool
     where
         T: TxToken,
         Q: FnMut(&Packet, &mut Context, T),
