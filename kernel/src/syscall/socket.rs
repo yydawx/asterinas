@@ -4,7 +4,7 @@ use super::SyscallReturn;
 use crate::{
     fs::file::{FileLike, file_table::FdFlags},
     net::socket::{
-        ip::{DatagramSocket, StreamSocket},
+        ip::{AddressFamily, DatagramSocket, StreamSocket},
         netlink::{
             NetlinkRouteSocket, NetlinkUeventSocket, StandardNetlinkProtocol, is_valid_protocol,
         },
@@ -35,17 +35,23 @@ pub fn sys_socket(domain: i32, type_: i32, protocol: i32, ctx: &Context) -> Resu
         (CSocketAddrFamily::AF_UNIX, SockType::SOCK_RAW | SockType::SOCK_DGRAM) => {
             UnixDatagramSocket::new(is_nonblocking) as Arc<dyn FileLike>
         }
-        (CSocketAddrFamily::AF_INET, SockType::SOCK_STREAM) => {
+        (CSocketAddrFamily::AF_INET | CSocketAddrFamily::AF_INET6, SockType::SOCK_STREAM) => {
             let protocol = Protocol::try_from(protocol)?;
             debug!("protocol = {:?}", protocol);
             match protocol {
                 Protocol::IPPROTO_IP | Protocol::IPPROTO_TCP => {
-                    StreamSocket::new(is_nonblocking) as Arc<dyn FileLike>
+                    let family = match domain {
+                        CSocketAddrFamily::AF_INET => AddressFamily::IPv4,
+                        CSocketAddrFamily::AF_INET6 => AddressFamily::IPv6,
+                        _ => unreachable!(),
+                    };
+                    StreamSocket::new(is_nonblocking, family) as Arc<dyn FileLike>
                 }
                 _ => return_errno_with_message!(Errno::EAFNOSUPPORT, "unsupported protocol"),
             }
         }
-        (CSocketAddrFamily::AF_INET, SockType::SOCK_DGRAM) => {
+        (CSocketAddrFamily::AF_INET, SockType::SOCK_DGRAM)
+        | (CSocketAddrFamily::AF_INET6, SockType::SOCK_DGRAM) => {
             let protocol = Protocol::try_from(protocol)?;
             debug!("protocol = {:?}", protocol);
             match protocol {
