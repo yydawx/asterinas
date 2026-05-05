@@ -202,5 +202,15 @@ pub(super) fn init_in_first_process() -> Result<()> {
         },
     )));
 
+    // Register dummy tty2..tty4 so that background processes
+    // (e.g. busybox getty) do not fail with "can't open /dev/ttyN".
+    for i in 2..=4u32 {
+        let dummy_driver = VtDriver {
+            console: fb_console.clone(),
+        };
+        let tty = Tty::new(i, dummy_driver);
+        char::register(tty)?;
+    }
+
     Ok(())
 }

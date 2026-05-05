@@ -26,6 +26,11 @@ mount -t configfs none /sys/kernel/config
 mount -t ext2 /dev/vda /ext2
 mount -t exfat /dev/vdb /exfat
 
+# Create dummy tty devices to suppress "can't open /dev/ttyN" messages.
+mknod /dev/tty2 c 4 2 2>/dev/null || true
+mknod /dev/tty3 c 4 3 2>/dev/null || true
+mknod /dev/tty4 c 4 4 2>/dev/null || true
+
 # When the init process starts,
 # it does not have a process group, session, or controlling terminal.
 # The `script` tool is a standard Linux utility
