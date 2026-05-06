@@ -5,43 +5,38 @@ use ostd::{arch::irq::IRQ_CHIP, debug};
 
 use crate::transport::mmio::bus::MmioRegisterError;
 
+/// Known virtio MMIO device addresses and their IOAPIC pin (GSI) numbers.
+/// These must match the virtio_cfg.json configuration used by the hypervisor's
+/// virtio daemon.
+const KNOWN_DEVICES: &[(usize, u32)] = &[
+    (0xFEB0_0000, 16), // console
+    (0xFEB0_0200, 17), // net
+];
+
 pub(super) fn probe_for_device() {
-    // TODO: The correct method for detecting VirtIO-MMIO devices on x86_64 systems is to parse the
-    // kernel command line if ACPI tables are absent [1], or the ACPI SSDT if ACPI tables are
-    // present [2]. Neither of them is supported for now. This function's approach of blindly
-    // scanning the MMIO region is only a workaround.
-    // [1]: https://github.com/torvalds/linux/blob/0ff41df1cb268fc69e703a08a57ee14ae967d0ca/drivers/virtio/virtio_mmio.c#L733
-    // [2]: https://github.com/torvalds/linux/blob/0ff41df1cb268fc69e703a08a57ee14ae967d0ca/drivers/virtio/virtio_mmio.c#L840
-
-    // Constants from QEMU MicroVM. We should remove them as they're QEMU's implementation details.
-    //
-    // https://github.com/qemu/qemu/blob/3c5a5e213e5f08fbfe70728237f7799ac70f5b99/hw/i386/microvm.c#L201
-    const QEMU_MMIO_BASE: usize = 0xFEB0_0000;
-    const QEMU_MMIO_SIZE: usize = 512;
-    // https://github.com/qemu/qemu/blob/3c5a5e213e5f08fbfe70728237f7799ac70f5b99/hw/i386/microvm.c#L196
-    const QEMU_IOAPIC1_GSI_BASE: u32 = 16;
-    const QEMU_IOAPIC1_NUM_TRANS: u32 = 8;
-    // https://github.com/qemu/qemu/blob/3c5a5e213e5f08fbfe70728237f7799ac70f5b99/hw/i386/microvm.c#L192
-    const QEMU_IOAPIC2_GSI_BASE: u32 = 24;
-    const QEMU_IOAPIC2_NUM_TRANS: u32 = 24;
-
-    let irq_chip = IRQ_CHIP.get().unwrap();
-    let (gsi_base, num_trans) = match irq_chip.count_io_apics() {
-        1 => (QEMU_IOAPIC1_GSI_BASE, QEMU_IOAPIC1_NUM_TRANS),
-        2.. => (QEMU_IOAPIC2_GSI_BASE, QEMU_IOAPIC2_NUM_TRANS),
-        0 => {
-            debug!("Skip MMIO detection because there are no I/O APICs");
+    let irq_chip = match IRQ_CHIP.get() {
+        Some(chip) => chip,
+        None => {
+            debug!("Skip MMIO detection because there is no IRQ chip");
             return;
         }
     };
 
-    for index in 0..num_trans {
-        let mmio_base = QEMU_MMIO_BASE + (index as usize) * QEMU_MMIO_SIZE;
-        match super::try_register_mmio_device(mmio_base..(mmio_base + QEMU_MMIO_SIZE), |irq_line| {
-            irq_chip.map_gsi_pin_to(irq_line, gsi_base + index)
+    if irq_chip.count_io_apics() == 0 {
+        debug!("Skip MMIO detection because there are no I/O APICs");
+        return;
+    }
+
+    for &(mmio_base, gsi) in KNOWN_DEVICES {
+        ostd::info!("Probing virtio MMIO device at {:#x} (GSI {})", mmio_base, gsi);
+        match super::try_register_mmio_device(mmio_base..(mmio_base + 0x200), |irq_line| {
+            irq_chip.map_gsi_pin_to(irq_line, gsi)
         }) {
-            Err(e) if e.is_fatal() => break,
-            _ => continue,
+            Ok(()) => ostd::info!("Registered virtio MMIO device at {:#x} (GSI {})", mmio_base, gsi),
+            Err(e) => ostd::info!(
+                "No virtio MMIO device at {:#x}: {:?}",
+                mmio_base, e
+            ),
         }
     }
 }
