@@ -7,7 +7,10 @@ use core::{
 
 use aster_bigtcp::{socket::RawTcpOption, wire::IpEndpoint};
 
-use super::{connecting::ConnectingStream, listen::ListenStream, observer::StreamObserver};
+use super::{
+    super::unmap_ipv4_addr, connecting::ConnectingStream, listen::ListenStream,
+    observer::StreamObserver,
+};
 use crate::{
     events::IoEvents,
     net::{
@@ -132,10 +135,13 @@ impl InitStream {
             ));
         }
 
+        let remote_endpoint =
+            IpEndpoint::new(unmap_ipv4_addr(remote_endpoint.addr), remote_endpoint.port);
+
         let bound_port = if let Some(bound_port) = self.bound_port {
             bound_port
         } else {
-            let endpoint = match get_ephemeral_endpoint(remote_endpoint) {
+            let endpoint = match get_ephemeral_endpoint(&remote_endpoint) {
                 Some(ep) => ep,
                 None => {
                     return Err((
@@ -153,7 +159,7 @@ impl InitStream {
             }
         };
 
-        ConnectingStream::new(bound_port, *remote_endpoint, option, observer).map_err(
+        ConnectingStream::new(bound_port, remote_endpoint, option, observer).map_err(
             |(err, bound_port)| {
                 if err.error() == Errno::ECONNREFUSED {
                     (err, InitStream::new_refused(bound_port, self.family))

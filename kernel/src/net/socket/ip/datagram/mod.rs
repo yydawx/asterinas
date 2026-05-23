@@ -6,9 +6,7 @@ use aster_bigtcp::wire::IpEndpoint;
 use bound::BoundDatagram;
 use unbound::{BindOptions, UnboundDatagram};
 
-use super::addr::{
-    IpAddressFamily, SocketFamily, ipv4_to_ipv4_mapped, is_ipv4_mapped,
-};
+use super::addr::{IpAddressFamily, SocketFamily, ipv4_to_ipv4_mapped, is_ipv4_mapped};
 use crate::{
     events::IoEvents,
     fs::{pseudofs::SockFs, vfs::path::Path},
@@ -199,7 +197,11 @@ impl Socket for DatagramSocket {
     }
 
     fn addr(&self) -> Result<SocketAddr> {
-        let endpoint = self.inner.read().addr().unwrap_or(self.family.unspecified_endpoint());
+        let endpoint = self
+            .inner
+            .read()
+            .addr()
+            .unwrap_or(self.family.unspecified_endpoint());
 
         Ok(self.present_addr(endpoint))
     }
