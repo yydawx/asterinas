@@ -58,9 +58,80 @@ impl IpAddressFamily {
     }
 }
 
-// Note: This does not handle IPv4-mapped IPv6 addresses. When `IPV6_V6ONLY` is set,
-// IPv4-mapped addresses are not permitted, so this function cannot be used to determine
-// whether such an address is acceptable.
+/// Returns `true` if the address is an IPv4-mapped IPv6 address (`::ffff:x.x.x.x`).
+pub(super) fn is_ipv4_mapped(addr: IpAddress) -> bool {
+    if let IpAddress::Ipv6(ipv6) = addr {
+        ipv6.to_ipv4_mapped().is_some()
+    } else {
+        false
+    }
+}
+
+/// Maps a bare IPv4 endpoint to an IPv4-mapped IPv6 [`SocketAddr`].
+///
+/// Native IPv6 endpoints pass through unchanged.
+// Used by `present_addr` to present dual-stack addresses to the user
+// in IPv4-mapped IPv6 form per RFC 4038.
+pub(super) fn ipv4_to_ipv4_mapped(endpoint: IpEndpoint) -> SocketAddr {
+    if let IpAddress::Ipv4(ipv4) = endpoint.addr {
+        let mapped = IpAddress::Ipv6(ipv4.to_ipv6_mapped());
+        return SocketAddr::from(IpEndpoint::new(mapped, endpoint.port));
+    }
+    SocketAddr::from(endpoint)
+}
+
+/// Returns the embedded IPv4 address if `addr` is an IPv4-mapped IPv6 address (`::ffff:x.x.x.x`).
+///
+/// Native IPv4, native IPv6, and all other addresses pass through unchanged.
+// The socket layer normalizes bare IPv4 to IPv4-mapped IPv6 for dual-stack sockets.
+// Every dispatch point deeper in the stack must call this function
+// to recover the native address for interface lookup,
+// broadcast detection, and ephemeral port selection.
+pub(crate) fn unmap_ipv4_addr(addr: IpAddress) -> IpAddress {
+    match addr {
+        IpAddress::Ipv6(addr) => match addr.to_ipv4_mapped() {
+            Some(ipv4) => IpAddress::Ipv4(ipv4),
+            None => IpAddress::Ipv6(addr),
+        },
+        other => other,
+    }
+}
+
+/// Encapsulates a socket's address family and dual-stack configuration.
+///
+/// Bundles `IpAddressFamily` with `IPV6_V6ONLY` state so they are always
+/// considered together in address normalization and presentation decisions.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SocketFamily {
+    family: IpAddressFamily,
+    v6only: bool,
+}
+
+impl SocketFamily {
+    /// Creates a new `SocketFamily` with an explicit `IPV6_V6ONLY` value.
+    pub fn with_v6only(family: IpAddressFamily, v6only: bool) -> Self {
+        Self { family, v6only }
+    }
+
+    /// Normalizes an endpoint for this socket's address family.
+    ///
+    /// In dual-stack mode (IPv6 + !v6only), maps bare IPv4 addresses to
+    /// IPv4-mapped IPv6 so the socket layer can process them uniformly.
+    pub fn normalize_endpoint(&self, endpoint: IpEndpoint) -> IpEndpoint {
+        if self.family == IpAddressFamily::IPv6
+            && !self.v6only
+            && let IpAddress::Ipv4(ipv4) = endpoint.addr
+        {
+            return IpEndpoint::new(IpAddress::Ipv6(ipv4.to_ipv6_mapped()), endpoint.port);
+        }
+        endpoint
+    }
+}
+
+// Note: This does not handle IPv4-mapped IPv6 addresses — it returns `IPv6`
+// for them. Callers that need to reject IPv4-mapped addresses when
+// `IPV6_V6ONLY` is set must combine this with an explicit `is_ipv4_mapped`
+// check (see `prepare_endpoint`).
 impl From<IpAddress> for IpAddressFamily {
     fn from(addr: IpAddress) -> Self {
         match addr {
