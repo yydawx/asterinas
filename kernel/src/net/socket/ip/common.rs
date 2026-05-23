@@ -6,6 +6,7 @@ use aster_bigtcp::{
     wire::{IpAddress, IpEndpoint},
 };
 
+use super::unmap_ipv4_addr;
 use crate::{
     net::{
         iface::{BoundPort, Iface, iter_all_ifaces, loopback_iface, virtio_iface},
@@ -72,7 +73,8 @@ fn get_ephemeral_iface(remote_ip_addr: &IpAddress) -> Arc<Iface> {
 pub(super) fn bind_port(endpoint: &IpEndpoint, can_reuse: bool) -> Result<BoundPort> {
     check_port_privilege(endpoint.port)?;
 
-    let iface = match get_iface_to_bind(&endpoint.addr) {
+    let effective_addr = unmap_ipv4_addr(endpoint.addr);
+    let iface = match get_iface_to_bind(&effective_addr) {
         Some(iface) => iface,
         None => {
             return_errno_with_message!(
@@ -82,7 +84,8 @@ pub(super) fn bind_port(endpoint: &IpEndpoint, can_reuse: bool) -> Result<BoundP
         }
     };
 
-    let bind_port_config = BindPortConfig::new(*endpoint, can_reuse);
+    let effective_endpoint = IpEndpoint::new(effective_addr, endpoint.port);
+    let bind_port_config = BindPortConfig::new(effective_endpoint, can_reuse);
 
     Ok(iface.bind(bind_port_config)?)
 }
@@ -101,8 +104,9 @@ impl From<BindError> for Error {
 }
 
 pub(super) fn get_ephemeral_endpoint(remote_endpoint: &IpEndpoint) -> Option<IpEndpoint> {
-    let iface = get_ephemeral_iface(&remote_endpoint.addr);
-    match remote_endpoint.addr {
+    let effective_addr = unmap_ipv4_addr(remote_endpoint.addr);
+    let iface = get_ephemeral_iface(&effective_addr);
+    match effective_addr {
         IpAddress::Ipv4(_) => {
             let ip_addr = iface.ipv4_addr()?;
             Some(IpEndpoint::new(IpAddress::Ipv4(ip_addr), 0))

@@ -5,7 +5,10 @@ use core::net::Ipv4Addr;
 use aster_bigtcp::wire::{IpAddress, IpEndpoint};
 use spin::Once;
 
-use crate::{net::iface::iter_all_ifaces, prelude::*};
+use crate::{
+    net::{iface::iter_all_ifaces, socket::ip::unmap_ipv4_addr},
+    prelude::*,
+};
 
 /// All known broadcast addresses.
 // FIXME: This information should be maintained in the routing table,
@@ -32,11 +35,12 @@ pub(super) fn init() {
 
 /// Determines if a given IP endpoint's address is a known broadcast address.
 ///
-/// IPv6 has no broadcast; multicast (`ff00::/8`) handles fan-out instead and
-/// is intentionally not covered by this function.
+/// IPv4-mapped IPv6 addresses are unmapped to bare IPv4 before the check.
+/// Native IPv6 has no broadcast and always returns `false`.
 pub fn is_broadcast_endpoint(endpoint: &IpEndpoint) -> bool {
-    let IpAddress::Ipv4(ipv4_addr) = &endpoint.addr else {
+    let effective_addr = unmap_ipv4_addr(endpoint.addr);
+    let IpAddress::Ipv4(ipv4_addr) = effective_addr else {
         return false;
     };
-    BROADCAST_ADDRS.get().unwrap().contains(ipv4_addr)
+    BROADCAST_ADDRS.get().unwrap().contains(&ipv4_addr)
 }
