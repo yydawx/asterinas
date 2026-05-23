@@ -7,6 +7,7 @@ pub mod options;
 mod stream;
 
 pub use addr::IpAddressFamily;
+pub(crate) use addr::unmap_ipv4_addr;
 pub use datagram::DatagramSocket;
 pub(in crate::net) use datagram::observer::DatagramObserver;
 pub(in crate::net) use stream::observer::StreamObserver;
