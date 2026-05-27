@@ -11,6 +11,7 @@ use crate::transport::mmio::bus::MmioRegisterError;
 const KNOWN_DEVICES: &[(usize, u32)] = &[
     (0xFEB0_0000, 16), // console
     (0xFEB0_0200, 17), // net
+    (0xFEB0_0400, 18), // blk
 ];
 
 pub(super) fn probe_for_device() {
