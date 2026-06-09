@@ -6,6 +6,7 @@ use aster_bigtcp::{
     wire::{IpAddress, IpEndpoint},
 };
 
+use super::unmap_ipv4_addr;
 use crate::{
     net::{
         iface::{Iface, iter_all_ifaces, loopback_iface, virtio_iface},
@@ -14,7 +15,7 @@ use crate::{
     prelude::*,
 };
 
-fn get_iface_to_bind(ip_addr: &IpAddress) -> Option<Arc<Iface>> {
+pub(super) fn get_iface_to_bind(ip_addr: &IpAddress) -> Option<Arc<Iface>> {
     match *ip_addr {
         IpAddress::Ipv4(ipv4_addr) => iter_all_ifaces()
             .find(|iface| iface.ipv4_addr().is_some_and(|addr| addr == ipv4_addr))
@@ -41,7 +42,9 @@ fn get_ephemeral_iface(remote_ip_addr: &IpAddress) -> Arc<Iface> {
 
             // FIXME: Instead of hardcoding the rules here, we should choose the
             // default interface according to the routing table.
-            if let Some(virtio_iface) = virtio_iface() {
+            if let Some(virtio_iface) = virtio_iface()
+                && virtio_iface.ipv4_addr().is_some()
+            {
                 virtio_iface.clone()
             } else {
                 loopback_iface().clone()
@@ -69,13 +72,24 @@ fn get_ephemeral_iface(remote_ip_addr: &IpAddress) -> Arc<Iface> {
     }
 }
 
+/// Resolves the interface and bind config for the given endpoint.
+///
+/// IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) are unmapped to bare IPv4
+/// internally so the low-level stack sees native addresses only. Callers may
+/// pass either native or mapped addresses — this function is idempotent on
+/// unmapping.
+///
+/// Returns the resolved interface and a `BindPortConfig`. The caller is
+/// responsible for calling `iface.bind_tcp(config)` or `iface.bind_udp(config)`
+/// depending on the protocol.
 pub(super) fn resolve_bind_iface_and_config(
     endpoint: &IpEndpoint,
     can_reuse: bool,
 ) -> Result<(Arc<Iface>, BindPortConfig)> {
     check_port_privilege(endpoint.port)?;
 
-    let iface = match get_iface_to_bind(&endpoint.addr) {
+    let effective_addr = unmap_ipv4_addr(endpoint.addr);
+    let iface = match get_iface_to_bind(&effective_addr) {
         Some(iface) => iface,
         None => {
             return_errno_with_message!(
@@ -85,7 +99,8 @@ pub(super) fn resolve_bind_iface_and_config(
         }
     };
 
-    let bind_port_config = BindPortConfig::new(*endpoint, can_reuse);
+    let effective_endpoint = IpEndpoint::new(effective_addr, endpoint.port);
+    let bind_port_config = BindPortConfig::new(effective_endpoint, can_reuse);
 
     Ok((iface, bind_port_config))
 }
@@ -103,9 +118,16 @@ impl From<BindError> for Error {
     }
 }
 
+/// Returns a local endpoint suitable for connecting to `remote_endpoint`.
+///
+/// IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) are unmapped to bare IPv4
+/// internally so the interface selection logic sees native addresses only.
+/// Callers may pass either native or mapped addresses — this function is
+/// idempotent on unmapping.
 pub(super) fn get_ephemeral_endpoint(remote_endpoint: &IpEndpoint) -> Option<IpEndpoint> {
-    let iface = get_ephemeral_iface(&remote_endpoint.addr);
-    match remote_endpoint.addr {
+    let effective_addr = unmap_ipv4_addr(remote_endpoint.addr);
+    let iface = get_ephemeral_iface(&effective_addr);
+    match effective_addr {
         IpAddress::Ipv4(_) => {
             let ip_addr = iface.ipv4_addr()?;
             Some(IpEndpoint::new(IpAddress::Ipv4(ip_addr), 0))

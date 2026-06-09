@@ -5,6 +5,7 @@ use aster_bigtcp::{
     wire::IpEndpoint,
 };
 
+use super::super::unmap_ipv4_addr;
 use crate::{
     events::IoEvents,
     net::{
@@ -49,7 +50,10 @@ impl datagram_common::Bound for BoundDatagram {
     }
 
     fn set_remote_endpoint(&mut self, endpoint: &Self::Endpoint) {
-        self.remote_endpoint = Some(*endpoint)
+        // Unmap IPv4-mapped IPv6 back to bare IPv4 before storing,
+        // so the low-level network stack always sees native addresses.
+        let endpoint = IpEndpoint::new(unmap_ipv4_addr(endpoint.addr), endpoint.port);
+        self.remote_endpoint = Some(endpoint)
     }
 
     fn try_recv(
