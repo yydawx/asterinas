@@ -92,7 +92,7 @@ impl InitStream {
 
         // When we support `IPV6_V6ONLY` and if it is set, we should also reject IPv4-mapped
         // IPv6 addresses.
-        if IpAddressFamily::from(endpoint.addr) != self.family {
+        if IpAddressFamily::from_raw_addr(endpoint.addr) != self.family {
             return_errno_with_message!(
                 Errno::EAFNOSUPPORT,
                 "the protocol family does not match the address family"
@@ -122,7 +122,7 @@ impl InitStream {
 
         // When we support `IPV6_V6ONLY` and if it is set, we should also reject IPv4-mapped
         // IPv6 addresses.
-        if IpAddressFamily::from(remote_endpoint.addr) != self.family {
+        if IpAddressFamily::from_raw_addr(remote_endpoint.addr) != self.family {
             return Err((
                 Error::with_message(
                     Errno::EAFNOSUPPORT,
