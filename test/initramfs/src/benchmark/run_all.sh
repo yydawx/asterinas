@@ -25,6 +25,10 @@ run() {
     echo "" | tee -a "$RESULT_FILE"
 }
 
+# Disk I/O first (memory-hungry, needs clean memory)
+run fio/ext2_seq_read_bw
+run fio/ext2_seq_write_bw
+
 # CPU
 run sysbench/cpu_lat
 run sysbench/thread_lat
@@ -49,10 +53,6 @@ run lmbench/vfs_write_lat
 # Scheduler
 run hackbench/group8_smp1
 run schbench/smp1
-
-# Disk I/O (now that we have a physical disk)
-run fio/ext2_seq_read_bw
-run fio/ext2_seq_write_bw
 
 echo "=== All benchmarks done ===" | tee -a "$RESULT_FILE"
 echo "Results saved to $RESULT_FILE"

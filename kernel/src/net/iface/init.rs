@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::borrow::ToOwned;
-use core::slice::Iter;
 
 use aster_bigtcp::{
     device::WithDevice,
@@ -17,17 +16,22 @@ use crate::{
 };
 
 static IFACES: Once<Vec<Arc<Iface>>> = Once::new();
+static VIRTIO_IFACE: Once<Arc<Iface>> = Once::new();
 
 pub fn loopback_iface() -> &'static Arc<Iface> {
     &IFACES.get().unwrap()[0]
 }
 
 pub fn virtio_iface() -> Option<&'static Arc<Iface>> {
-    IFACES.get().unwrap().get(1)
+    VIRTIO_IFACE.get()
 }
 
-pub fn iter_all_ifaces() -> Iter<'static, Arc<Iface>> {
-    IFACES.get().unwrap().iter()
+pub fn iter_all_ifaces() -> impl Iterator<Item = &'static Arc<Iface>> {
+    IFACES
+        .get()
+        .unwrap()
+        .iter()
+        .chain(VIRTIO_IFACE.get().into_iter())
 }
 
 // TODO: Support multiple network devices and avoid the hardcoded device name.
@@ -35,27 +39,28 @@ const VIRTIO_DEVICE_NAME: &str = aster_virtio::device::network::DEVICE_NAME;
 
 pub fn init() {
     IFACES.call_once(|| {
-        let mut ifaces = Vec::with_capacity(2);
-
-        // Initialize loopback before virtio
-        // to ensure the loopback interface index is ahead of virtio.
+        let mut ifaces = Vec::with_capacity(1);
         ifaces.push(new_loopback());
-
-        if let Some(iface_virtio) = new_virtio() {
-            ifaces.push(iface_virtio);
-        }
-
         ifaces
     });
 
-    if let Some(iface_virtio) = virtio_iface() {
-        let callback = || iface_virtio.poll();
-        aster_network::register_recv_callback(VIRTIO_DEVICE_NAME, callback);
-        aster_network::register_send_callback(VIRTIO_DEVICE_NAME, callback);
-    }
-
     broadcast::init();
+}
 
+/// Try to create the virtio network interface after the virtio component has
+/// finished device probing.
+pub fn try_init_virtio_iface() {
+    if VIRTIO_IFACE.is_completed() {
+        return;
+    }
+    let Some(iface) = new_virtio() else { return };
+    let cb_iface = iface.clone();
+    let callback = move || cb_iface.poll();
+    aster_network::register_recv_callback(VIRTIO_DEVICE_NAME, callback);
+    let cb_iface = iface.clone();
+    let callback = move || cb_iface.poll();
+    aster_network::register_send_callback(VIRTIO_DEVICE_NAME, callback);
+    VIRTIO_IFACE.call_once(|| iface);
     poll_ifaces();
 }
 

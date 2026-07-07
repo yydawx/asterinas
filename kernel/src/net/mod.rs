@@ -13,4 +13,7 @@ pub fn init() {
 /// Lazy init should be called after spawning init thread.
 pub fn init_in_first_kthread() {
     iface::init_in_first_kthread();
+    // Virtio devices are probed during component init which runs right
+    // before this function.  Try to pick up the Virtio-Net device now.
+    iface::try_init_virtio_iface();
 }
